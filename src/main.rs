@@ -1,3 +1,4 @@
+use std::fmt;
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::{collections::HashMap, process::exit};
@@ -26,6 +27,19 @@ impl Command {
     }
 }
 
+#[derive(Debug)]
+enum ShellError {
+    CommandNotFound(String),
+}
+
+impl fmt::Display for ShellError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ShellError::CommandNotFound(cmd) => write!(f, "{}: command not found", cmd),
+        }
+    }
+}
+
 type CommandHandler = fn(&Command) -> ();
 
 fn get_handlers() -> HashMap<String, CommandHandler> {
@@ -46,7 +60,30 @@ fn get_handlers() -> HashMap<String, CommandHandler> {
 
 fn main() {
     let handlers = get_handlers();
-    
+
+    let run_command_or_error = |command: &Command| -> Option<ShellError> {
+        match &command.id {
+            id if id == "type" => {
+                if let Some(query) = command.args.first() {
+                    if handlers.contains_key(query) || query == "type" {
+                        println!("{} is a shell builtin", query);
+                    } else {
+                        println!("{}: not found", query);
+                    }
+                    return None;
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(handler) = handlers.get(&command.id) {
+            handler(&command);
+            return None;
+        }
+
+        Some(ShellError::CommandNotFound(command.id.clone()))
+    };
+
     loop {
         print!("$ ");
         io::stdout().flush().unwrap();
@@ -57,10 +94,9 @@ fn main() {
             .expect("Failed to read line");
 
         if let Some(command) = Command::parse(input) {
-            if let Some(handler) = handlers.get(&command.id) {
-                handler(&command);
-            } else {
-                println!("{}: command not found", command.id);
+            match run_command_or_error(&command) {
+                Some(error) => eprintln!("{}", error),
+                None => {}
             }
         }
     }
