@@ -1,6 +1,10 @@
+use std::env;
 use std::fmt;
+use std::fs;
 #[allow(unused_imports)]
 use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::{collections::HashMap, process::exit};
 
 struct Command {
@@ -58,6 +62,24 @@ fn get_handlers() -> HashMap<String, CommandHandler> {
     executor_map
 }
 
+fn get_system_executable_path(name: &str) -> Option<String> {
+    if let Some(paths) = env::var_os("PATH") {
+        for path in env::split_paths(&paths) {
+            if let Some(absolute_path) = Path::new(&path).join(name).canonicalize().ok() {
+                if let Ok(metadata) = fs::metadata(&absolute_path) {
+                    let perms = metadata.permissions();
+                    if perms.mode() & 0o111 != 0 {
+                        //rwx
+                        // TODO: see what the approach to reduce nesting is in rust
+                        return absolute_path.to_str().map(|x| x.to_string());
+                    }
+                }
+            }
+        }
+    }
+    return None;
+}
+
 fn main() {
     let handlers = get_handlers();
 
@@ -67,6 +89,8 @@ fn main() {
                 if let Some(query) = command.args.first() {
                     if handlers.contains_key(query) || query == "type" {
                         println!("{} is a shell builtin", query);
+                    } else if let Some(exe_path) = get_system_executable_path(&query) {
+                        println!("{} is {}", query, exe_path);
                     } else {
                         println!("{}: not found", query);
                     }
