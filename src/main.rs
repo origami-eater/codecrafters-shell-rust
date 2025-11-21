@@ -1,6 +1,7 @@
 use std::env;
 use std::fmt;
 use std::fs;
+use std::fs::Permissions;
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -31,6 +32,11 @@ impl Command {
     }
 }
 
+struct Executable {
+    path: String,
+    permissions: Permissions,
+}
+
 #[derive(Debug)]
 enum ShellError {
     CommandNotFound(String),
@@ -52,6 +58,8 @@ fn get_handlers() -> HashMap<String, CommandHandler> {
     executor_map.insert(String::from("exit"), |command| {
         if let Some(exit_code) = command.args.first().and_then(|x| x.parse().ok()) {
             exit(exit_code);
+        } else {
+            exit(0);
         }
     });
 
@@ -62,22 +70,48 @@ fn get_handlers() -> HashMap<String, CommandHandler> {
     executor_map
 }
 
-fn get_system_executable_path(name: &str) -> Option<String> {
+fn get_executable(name: &str) -> Option<Executable> {
     if let Some(paths) = env::var_os("PATH") {
-        for path in env::split_paths(&paths) {
-            if let Some(absolute_path) = Path::new(&path).join(name).canonicalize().ok() {
-                if let Ok(metadata) = fs::metadata(&absolute_path) {
-                    let perms = metadata.permissions();
-                    if perms.mode() & 0o111 != 0 {
-                        //rwx
-                        // TODO: see what the approach to reduce nesting is in rust
-                        return absolute_path.to_str().map(|x| x.to_string());
-                    }
-                }
+        for dir in env::split_paths(&paths) {
+            let abs_path = match Path::new(&dir).join(name).canonicalize() {
+                Ok(abs_path) => abs_path,
+                _ => continue,
+            };
+            let metadata = fs::metadata(&abs_path).ok()?;
+            let perms = metadata.permissions();
+            if perms.mode() & 0o111 != 0 {
+                return abs_path.to_str().map(|x| Executable {
+                    path: x.to_owned(),
+                    permissions: perms,
+                });
+            } else {
+                continue;
             }
         }
     }
     return None;
+}
+
+fn run_process(command: &Command, executable: &Executable) {
+    let process = match std::process::Command::new(&command.id)
+        .args(command.args.clone())
+        .spawn()
+    {
+        Ok(process) => process,
+        Err(err) => panic!("encountered error spawning a process: {}", err),
+    };
+
+    let output = match process.wait_with_output() {
+        Ok(output) => output,
+        Err(err) => panic!("Retrieving output error: {}", err),
+    };
+
+    let stdout = match std::string::String::from_utf8(output.stdout) {
+        Ok(stdout) => stdout,
+        Err(err) => panic!("Translating output error: {}", err),
+    };
+
+    print!("{}", stdout);
 }
 
 fn main() {
@@ -89,8 +123,8 @@ fn main() {
                 if let Some(query) = command.args.first() {
                     if handlers.contains_key(query) || query == "type" {
                         println!("{} is a shell builtin", query);
-                    } else if let Some(exe_path) = get_system_executable_path(&query) {
-                        println!("{} is {}", query, exe_path);
+                    } else if let Some(executable) = get_executable(&query) {
+                        println!("{} is {}", query, executable.path);
                     } else {
                         println!("{}: not found", query);
                     }
@@ -103,9 +137,12 @@ fn main() {
         if let Some(handler) = handlers.get(&command.id) {
             handler(&command);
             return None;
+        } else if let Some(executable) = get_executable(&command.id) {
+            run_process(command, &executable);
+            return None;
+        } else {
+            return Some(ShellError::CommandNotFound(command.id.clone()))
         }
-
-        Some(ShellError::CommandNotFound(command.id.clone()))
     };
 
     loop {
