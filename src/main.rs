@@ -1,9 +1,11 @@
+use anyhow;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::exit;
+use std::process::Stdio;
 
 #[derive(Debug)]
 enum ShellError {
@@ -20,7 +22,7 @@ impl std::fmt::Display for ShellError {
 
 impl std::error::Error for ShellError {}
 
-type ShellResult = Result<String, Box<dyn std::error::Error>>;
+type ShellResult = Result<String, anyhow::Error>;
 
 struct Command {
     name: String,
@@ -46,22 +48,17 @@ enum Builtin {
     Exit,
     Echo,
     Type,
+    Pwd,
 }
 
 // manually defining it since ideally the least external dependencies
 impl Builtin {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Builtin::Echo => "echo",
-            Builtin::Exit => "exit",
-            Builtin::Type => "type",
-        }
-    }
     fn from_str(s: &str) -> Option<Builtin> {
         match s {
             "echo" => Some(Builtin::Echo),
             "exit" => Some(Builtin::Exit),
             "type" => Some(Builtin::Type),
+            "pwd" => Some(Builtin::Pwd),
             _ => None,
         }
     }
@@ -90,6 +87,10 @@ fn run_builtin(b: &Builtin, args: &[String]) -> ShellResult {
                 Ok(format!("{}: not found", query))
             };
         }
+        Builtin::Pwd => match env::current_dir()?.to_str() {
+            Some(cwd) => Ok(cwd.to_owned()),
+            None => Err(anyhow::anyhow!("could not parse current directory path")),
+        },
     };
 }
 
@@ -118,14 +119,15 @@ impl SystemExecutable {
     }
     fn run_foreground(&self, args: &[String]) -> ShellResult {
         let process = std::process::Command::new(&self.name)
-            .args(args.clone())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .args(args)
             .spawn()?;
 
         let output = process.wait_with_output()?;
-
         let stdout = std::string::String::from_utf8(output.stdout)?;
-
-        Ok(stdout)
+        Ok(stdout.trim().to_owned())
     }
 }
 
